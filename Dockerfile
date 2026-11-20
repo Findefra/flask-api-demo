@@ -9,8 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app.py .
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser && chown -R appuser:appuser /app
+# Create non-root user and make /app writable for SQLite
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 5000

@@ -50,3 +50,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3

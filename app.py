@@ -1,47 +1,110 @@
 """
-Flask REST API Demo
-A clean, production-oriented example suitable for interviews and learning.
+Flask REST API Demo with SQLAlchemy database integration.
+Uses SQLite by default. Set DATABASE_URL to switch to PostgreSQL or other DBs.
 """
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
-import uuid
+from sqlalchemy import inspect
 import os
+import uuid
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend testing
+CORS(app)
 
-# Simple in-memory store (replace with a real DB in production)
-items = {}
+# ---------------------------------------------------------------------------
+# Database configuration
+# ---------------------------------------------------------------------------
+# Default: SQLite file in the project directory (good for local / demos)
+# Production example: postgresql+psycopg2://user:pass@host:5432/dbname
+database_url = os.environ.get("DATABASE_URL", "sqlite:///items.db")
+
+# Handle Heroku-style postgres:// URLs
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,  # useful for cloud databases
+}
+
+db = SQLAlchemy(app)
 
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+class Item(db.Model):
+    __tablename__ = "items"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text, default="")
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description or "",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# Create tables on startup (simple approach; use Flask-Migrate / Alembic for production)
+with app.app_context():
+    db.create_all()
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint for load balancers and Kubernetes probes."""
+    db_status = "unknown"
+    try:
+        # Lightweight check that the database is reachable
+        inspect(db.engine).get_table_names()
+        db_status = "connected"
+    except Exception:
+        db_status = "unavailable"
+
+    status_code = 200 if db_status == "connected" else 503
     return jsonify({
-        "status": "healthy",
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "database": db_status,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "service": "flask-api-demo"
-    }), 200
+        "service": "flask-api-demo",
+    }), status_code
 
 
 @app.route("/api/v1/items", methods=["GET"])
 def list_items():
     """Return all items."""
+    items = Item.query.order_by(Item.created_at.desc()).all()
     return jsonify({
         "count": len(items),
-        "items": list(items.values())
+        "items": [item.to_dict() for item in items],
     }), 200
 
 
 @app.route("/api/v1/items/<item_id>", methods=["GET"])
 def get_item(item_id):
     """Return a single item by ID."""
-    item = items.get(item_id)
+    item = Item.query.get(item_id)
     if not item:
         return jsonify({"error": "Item not found"}), 404
-    return jsonify(item), 200
+    return jsonify(item.to_dict()), 200
 
 
 @app.route("/api/v1/items", methods=["POST"])
@@ -53,46 +116,46 @@ def create_item():
     if not name or not isinstance(name, str) or not name.strip():
         return jsonify({"error": "Field 'name' is required and must be a non-empty string"}), 400
 
-    item_id = str(uuid.uuid4())
-    item = {
-        "id": item_id,
-        "name": name.strip(),
-        "description": data.get("description", ""),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    items[item_id] = item
-    return jsonify(item), 201
+    item = Item(
+        name=name.strip(),
+        description=data.get("description", "") or "",
+    )
+    db.session.add(item)
+    db.session.commit()
+    return jsonify(item.to_dict()), 201
 
 
 @app.route("/api/v1/items/<item_id>", methods=["PUT"])
 def update_item(item_id):
     """Update an existing item."""
-    if item_id not in items:
+    item = Item.query.get(item_id)
+    if not item:
         return jsonify({"error": "Item not found"}), 404
 
     data = request.get_json(silent=True) or {}
-    item = items[item_id]
 
     if "name" in data:
         name = data["name"]
         if not name or not isinstance(name, str) or not name.strip():
             return jsonify({"error": "Field 'name' must be a non-empty string"}), 400
-        item["name"] = name.strip()
+        item.name = name.strip()
 
     if "description" in data:
-        item["description"] = data.get("description", "")
+        item.description = data.get("description", "") or ""
 
-    item["updated_at"] = datetime.now(timezone.utc).isoformat()
-    return jsonify(item), 200
+    db.session.commit()
+    return jsonify(item.to_dict()), 200
 
 
 @app.route("/api/v1/items/<item_id>", methods=["DELETE"])
 def delete_item(item_id):
     """Delete an item."""
-    if item_id not in items:
+    item = Item.query.get(item_id)
+    if not item:
         return jsonify({"error": "Item not found"}), 404
-    del items[item_id]
+
+    db.session.delete(item)
+    db.session.commit()
     return "", 204
 
 
@@ -103,6 +166,7 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
+    db.session.rollback()
     return jsonify({"error": "Internal server error"}), 500
 
 

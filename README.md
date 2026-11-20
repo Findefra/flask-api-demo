@@ -1,16 +1,19 @@
 # Flask API Demo
 
-A clean, production-oriented Flask REST API example.
+A clean, production-oriented Flask REST API with **SQLAlchemy database integration**.
 
 ## Features
 
-- Health check endpoint (`/health`) suitable for Kubernetes/load balancer probes
+- SQLAlchemy + Flask-SQLAlchemy
+- SQLite by default (zero config for local development)
+- Easily switch to PostgreSQL (or any SQLAlchemy-supported DB) via `DATABASE_URL`
+- Health check includes database connectivity status
 - Full CRUD for items (`/api/v1/items`)
 - Input validation
 - CORS enabled
 - Gunicorn production server
 - Non-root Docker image
-- Proper error handling
+- Proper error handling + transaction rollback
 
 ## Quick Start (Local)
 
@@ -25,11 +28,34 @@ python app.py
 
 API will be available at `http://localhost:5000`
 
+A SQLite database file (`items.db`) is created automatically on first run.
+
+## Database Configuration
+
+| Environment Variable | Default              | Description                          |
+|----------------------|----------------------|--------------------------------------|
+| `DATABASE_URL`       | `sqlite:///items.db` | Full SQLAlchemy connection string    |
+
+### Examples
+
+```bash
+# SQLite (default)
+export DATABASE_URL="sqlite:///items.db"
+
+# PostgreSQL
+export DATABASE_URL="postgresql+psycopg2://user:password@localhost:5432/flask_demo"
+
+# Docker + external Postgres
+docker run -e DATABASE_URL="postgresql+psycopg2://..." -p 5000:5000 flask-api-demo
+```
+
+> Note: Uncomment `psycopg2-binary` in `requirements.txt` when using PostgreSQL.
+
 ## Endpoints
 
 | Method | Path                    | Description              |
 |--------|-------------------------|--------------------------|
-| GET    | `/health`               | Health check             |
+| GET    | `/health`               | Health check + DB status |
 | GET    | `/api/v1/items`         | List all items           |
 | GET    | `/api/v1/items/<id>`    | Get single item          |
 | POST   | `/api/v1/items`         | Create item              |
@@ -39,7 +65,7 @@ API will be available at `http://localhost:5000`
 ### Example Requests
 
 ```bash
-# Health
+# Health (now also reports database status)
 curl http://localhost:5000/health
 
 # Create item
@@ -58,13 +84,19 @@ docker build -t flask-api-demo .
 docker run -p 5000:5000 flask-api-demo
 ```
 
+For persistent SQLite data:
+
+```bash
+docker run -p 5000:5000 -v $(pwd)/data:/app flask-api-demo
+```
+
 ## Production Notes
 
-- Replace the in-memory store with a real database (PostgreSQL, DynamoDB, etc.)
+- For schema changes, prefer **Flask-Migrate / Alembic** instead of `db.create_all()`
 - Add authentication (JWT, API keys, or OIDC)
 - Add structured logging and metrics
-- Use environment variables for configuration
-- Consider adding rate limiting and request validation libraries (e.g. pydantic + flask-pydantic)
+- Use connection pooling and proper secrets management
+- Consider rate limiting and stronger request validation (e.g. Pydantic)
 
 ## License
 
